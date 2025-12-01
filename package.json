@@ -1,0 +1,12 @@
+{
+  "name": "com.unityext.android.foregroundservice",
+  "version": "1.0.0",
+  "displayName": "Android Foreground Service",
+  "description": "Provides a customizable Android Foreground Service for Unity.",
+  "unity": "2021.3",
+  "type": "library",
+  "author": {
+    "name": "Mahdi Iran Nezhad",
+    "email": "Mahdi.Papata@gmail.com"
+  }
+}
