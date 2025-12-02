@@ -1,0 +1,22 @@
+apply plugin: 'com.android.library'
+
+android {
+    compileSdkVersion 36
+    buildToolsVersion '34.0.0'
+    defaultConfig {
+        minSdkVersion 23
+        targetSdkVersion 36
+    }
+
+    buildTypes {
+        release {
+            consumerProguardFiles 'proguard.txt'
+        }
+    }
+}
+
+dependencies {
+    implementation "androidx.core:core:1.6.0"
+    implementation "androidx.activity:activity:1.6.1"
+    implementation "androidx.annotation:annotation:1.5.0"
+}

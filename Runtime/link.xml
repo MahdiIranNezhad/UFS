@@ -1,0 +1,5 @@
+<linker>
+  <assembly fullname="UnityEngine.AndroidJNIModule">
+    <type fullname="com.unity.extension.UnityForegroundService" preserve="all"/>
+  </assembly>
+</linker>
