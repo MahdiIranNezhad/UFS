@@ -1,6 +1,6 @@
 {
   "name": "com.unity.extension.unityforegroundservice",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "displayName": "Android Foreground Service",
   "description": "Provides a customizable Android Foreground Service for Unity.",
   "unity": "2022.3",
@@ -8,5 +8,8 @@
   "author": {
     "name": "Mahdi Iran Nezhad",
     "email": "Mahdi.Papata@gmail.com"
+  },
+  "dependencies": {
+    "com.cysharp.unitask": "2.3.1"
   }
 }
