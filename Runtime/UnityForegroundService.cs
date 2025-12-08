@@ -59,6 +59,30 @@ namespace UFS
             ConfirmServiceStarted().Forget();
         }
 
+        public static void Start(string title, string message)
+        {
+            if (IsRunning)
+            {
+                Debug.Log("[UFS] Start(title,message) ignored → already running");
+                return;
+            }
+
+            Debug.Log($"[UFS] Start(title,message) → Starting with '{title}' / '{message}'");
+
+            using var intent = new AndroidJavaObject("android.content.Intent", activity, serviceClass);
+            intent.Call<AndroidJavaObject>("putExtra", EXTRA_TITLE, title);
+            intent.Call<AndroidJavaObject>("putExtra", EXTRA_MESSAGE, message);
+
+            int sdk = new AndroidJavaClass("android.os.Build$VERSION").GetStatic<int>("SDK_INT");
+            if (sdk >= 26)
+                activity.Call<AndroidJavaObject>("startForegroundService", intent);
+            else
+                activity.Call<AndroidJavaObject>("startService", intent);
+
+            ConfirmServiceStarted().Forget();
+        }
+
+
         private static async UniTaskVoid ConfirmServiceStarted()
         {
             Debug.Log("[UFS] ConfirmServiceStarted() checking...");
@@ -180,6 +204,7 @@ namespace UFS
 #else
         public static bool IsRunning => false;
         public static void Start() { }
+        public static void Start(string title, string message) { }
         public static void Stop() { }
         public static void Update(string title, string message) { }
 

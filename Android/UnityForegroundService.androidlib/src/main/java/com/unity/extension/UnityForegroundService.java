@@ -79,6 +79,12 @@ public class UnityForegroundService extends Service
         // ----------------------
         // NORMAL FOREGROUND START
         // ----------------------
+        String extraTitle = intent.getStringExtra(EXTRA_TITLE);
+        String extraMessage = intent.getStringExtra(EXTRA_MESSAGE);
+
+        if (extraTitle != null) currentTitle = extraTitle;
+        if (extraMessage != null) currentMessage = extraMessage;
+
         startForeground(NOTIFICATION_ID, buildNotification());
         isRunningForeground = true;
         isRunning = true;
