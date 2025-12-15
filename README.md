@@ -69,11 +69,11 @@ All without touching Java code.
 ## Installation (UPM)
 Add via Git URL:
 ```
-https://git.mypapata.ir/MahdiTKD/ufs.git
+https://github.com/MahdiIranNezhad/UFS.git
 ```
 Or add to `Packages/manifest.json`:
 ```json
-"com.unity.extension.unityforegroundservice": "https://git.mypapata.ir/MahdiTKD/ufs.git"
+"com.unity.extension.unityforegroundservice": "https://github.com/MahdiIranNezhad/UFS.git"
 ```
 
 ---
@@ -161,3 +161,4 @@ This package provides a clean, reusable, UPM‑friendly solution used across all
 
 ## Contributions
 PRs and improvements are welcome.
+
