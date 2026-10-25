@@ -40,9 +40,9 @@ normal scene changes. It performs this state transition:
 3. At the deadline Java calls
    `UnityPlayer.UnitySendMessage("UFSShortTaskController", ... )` with the task ID.
    Unity ignores a stale ID or a duplicate callback.
-4. The registered SmartFox handler checks the actual client, requests its real
-   disconnect operation, and returns `true` only after confirmation or when already
-   disconnected.
+4. The registered synchronous SmartFox handler checks the actual client, requests
+   its real disconnect operation, and returns `true` only after confirmation or when
+   already disconnected.
 5. Only then does Unity send the task-specific acknowledgement. Java verifies the
    task ID, removes the notification, and stops the service.
 6. If Unity is suspended, killed, unavailable, or the handler does not acknowledge
@@ -102,8 +102,6 @@ uses the SDK instance owned by the consuming game:
 
 ```csharp
 using System;
-using System.Threading;
-using Cysharp.Threading.Tasks;
 using UFS;
 
 // The adapter owns the real SDK-specific event subscription and disconnect call.
@@ -114,21 +112,22 @@ public static class GameSmartFoxIntegration
     public static void Install(IActualSmartFoxAdapter adapter)
     {
         UFSShortTaskController.RegisterSmartFoxDisconnectHandler(
-            (taskId, cancellationToken) => adapter.DisconnectAndWaitAsync(cancellationToken));
+            taskId => adapter.DisconnectSynchronously(taskId));
     }
 }
 
 public interface IActualSmartFoxAdapter
 {
-    UniTask<bool> DisconnectAndWaitAsync(CancellationToken cancellationToken);
+    bool DisconnectSynchronously(string taskId);
 }
 ```
 
 `IActualSmartFoxAdapter` is intentionally an application-owned seam: implement it
-with the installed SmartFox SDK's real `IsConnected`/disconnect/event APIs, including
-unsubscribing event handlers and honoring the cancellation token. Do not call the
-Unity wrapper's acknowledgement from the adapter. The controller performs that only
-after the delegate returns `true`, and times out the delegate after four seconds.
+with the installed SmartFox SDK's real `IsConnected`/disconnect APIs. Do not call
+the Unity wrapper's acknowledgement from the adapter. The controller performs that
+only after the delegate returns `true`. Because this contract is synchronous, the
+adapter must not block the Unity main thread; the native fallback remains available
+if Unity cannot return to the callback path.
 
 ## Android configuration
 

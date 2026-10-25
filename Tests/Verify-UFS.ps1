@@ -35,7 +35,7 @@ foreach ($token in @('Start()', 'Start(string title, string message)', 'Update(s
     if ($service -notmatch [regex]::Escape($token)) { throw "C# wrapper API missing: $token" }
 }
 
-foreach ($token in @('RuntimeInitializeOnLoadMethod', 'OnApplicationPause', 'OnNativeShortTaskDeadline', 'RegisterSmartFoxDisconnectHandler', 'StopShortTaskAfterDisconnect', 'Guid.NewGuid')) {
+foreach ($token in @('RuntimeInitializeOnLoadMethod', 'OnApplicationPause', 'OnNativeShortTaskDeadline', 'RegisterSmartFoxDisconnectHandler', 'StopShortTaskAfterDisconnect', 'Func<string, bool>', 'Guid.NewGuid')) {
     if ($controller -notmatch [regex]::Escape($token)) { throw "Controller token missing: $token" }
 }
 
