@@ -1,6 +1,5 @@
-using System;
-
 #if UNITY_ANDROID && !UNITY_EDITOR
+using System;
 using Cysharp.Threading.Tasks;
 using UnityEngine;
 #endif
@@ -282,7 +281,7 @@ namespace UFS
         private static void StopServiceDirectly()
         {
             using (var intent = CreateIntent(actionStop))
-            using (var ignored = activity.Call<AndroidJavaObject>("stopService", intent)) { }
+                activity.Call<bool>("stopService", intent);
         }
 
         private static bool CheckAndroidServiceRunning()
@@ -331,10 +330,15 @@ namespace UFS
         }
 
 #else
-        public static bool IsRunning { get { return false; } }
 
-        public static void Start() { }
-        public static void Start(string title, string message) { }
+        public const bool IsRunning = false;
+
+        public static void Start()
+        { }
+
+        public static void Start(string title, string message)
+        { }
+
         public static ShortTaskStartResult StartShortTask(
             string taskId,
             string title,
@@ -343,10 +347,19 @@ namespace UFS
         {
             return ShortTaskStartResult.Rejected;
         }
-        public static void Update(string title, string message) { }
-        public static void CancelShortTask(string taskId) { }
-        public static void StopShortTaskAfterDisconnect(string taskId) { }
-        public static void Stop() { }
+
+        public static void Update(string title, string message)
+        { }
+
+        public static void CancelShortTask(string taskId)
+        { }
+
+        public static void StopShortTaskAfterDisconnect(string taskId)
+        { }
+
+        public static void Stop()
+        { }
+
 #endif
     }
 }
