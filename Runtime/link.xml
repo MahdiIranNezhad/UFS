@@ -1,5 +1,6 @@
 <linker>
-  <assembly fullname="UnityEngine.AndroidJNIModule">
-    <type fullname="com.unity.extension.UnityForegroundService" preserve="all"/>
+  <assembly fullname="UFS">
+    <type fullname="UFS.UnityForegroundService" preserve="all"/>
+    <type fullname="UFS.UFSShortTaskController" preserve="all"/>
   </assembly>
 </linker>

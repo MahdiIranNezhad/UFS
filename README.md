@@ -1,164 +1,195 @@
-# Unity Foreground Service (Android) – UPM Package
+# Unity Foreground Service for bounded Android work
 
-## Overview
-This package provides a production‑ready **Android Foreground Service integration for Unity**, delivered as a clean **UPM package** with full androidlib structure. It is designed specifically for scenarios where an Android app must maintain long‑running network operations (socket connections, SmartFoxServer, realtime multiplayer, background sync) without being killed by Android's aggressive background restrictions.
+This UPM package starts a bounded Android foreground service using the `shortService`
+foreground-service type. It is intended for a brief background operation, such as
+asking the consuming Unity game to close a SmartFox connection cleanly after the app
+is paused. It is not a socket-keepalive service and cannot keep a game connected
+indefinitely.
 
-Android 13+ and Android 14+ enforce strict network limitations when an app is minimized, locked, or swipe‑closed. Without a foreground service, sockets terminate after ~60 seconds. This package solves that.
+The repository contains the Android library and Unity runtime wrapper, but it does
+not contain a SmartFox client or a Unity game. The consuming game must register its
+real disconnect implementation through the documented adapter contract below.
 
----
+## Requirements
 
-## Problem Summary
-### Background Networking Issue (Android 13+ / 14)
-Unity games relying on persistent networking (SmartFoxServer, WebSocket, TCP, UDP) experience:
+- Unity 2022.3 or newer.
+- Android library compile/target SDK 36. The consuming project must be able to merge
+  the package manifest and should use target SDK 34 or newer when testing `shortService`.
+- UniTask 2.3.1, already declared by `package.json`.
+- Android permission `FOREGROUND_SERVICE`. `shortService` does not require a
+  type-specific foreground-service permission.
 
-- Disconnection after ~60 seconds when app goes to background
-- Failed reconnection attempts
-- `CONNECTION_RETRY` and `CONNECTION_RESUME` never firing
-- Socket being fully terminated by the OS
+Android 12/API 31 and newer restrict foreground-service starts while the app is in
+the background. This package requests the service from Unity's pause transition and
+catches a rejected start; an Android exception or a device policy can still reject
+the request. A request being issued is not reported as a running service: use
+`UnityForegroundService.IsRunning` after native confirmation.
 
-**Root Cause:**  
-Modern Android versions aggressively suspend or kill apps running background network tasks unless a **Foreground Service** is active.
+## Lifecycle
 
----
+`UFSShortTaskController` is created automatically before the first scene and survives
+normal scene changes. It performs this state transition:
 
-## Package Solution
-This package implements:
+1. `OnApplicationPause(true)` generates a process-unique task ID (`Guid`), requests
+   one short task, and shows the existing low-importance
+   foreground notification.
+2. The native service starts an independent monotonic-deadline timer. The default
+   deadline is 120 seconds; values are clamped to 1–150 seconds. Android documents
+   `shortService` as approximately three minutes, so the package reserves time for
+   callback delivery and cleanup.
+3. At the deadline Java calls
+   `UnityPlayer.UnitySendMessage("UFSShortTaskController", ... )` with the task ID.
+   Unity ignores a stale ID or a duplicate callback.
+4. The registered SmartFox handler checks the actual client, requests its real
+   disconnect operation, and returns `true` only after confirmation or when already
+   disconnected.
+5. Only then does Unity send the task-specific acknowledgement. Java verifies the
+   task ID, removes the notification, and stops the service.
+6. If Unity is suspended, killed, unavailable, or the handler does not acknowledge
+   within five seconds of the native deadline, Java stops the service. This fallback
+   is bounded cleanup only; it does not prove that SmartFox completed a protocol-level
+   disconnect.
+7. `OnApplicationPause(false)` cancels the active task and removes the service. A
+   resume race cannot acknowledge a task that is no longer current.
 
-### 1. A complete, optimized Java Foreground Service
-- Runs persistently while app is backgrounded
-- Uses `remoteMessaging` and `dataSync` service types
-- Handles Android 12–14 requirements
-- Stops cleanly with Unity lifecycle events
+Repeated pause events are idempotent. A repeated start for the same task does not
+reset the deadline, and a different overlapping task is rejected. The service uses
+`START_NOT_STICKY`, cancels timers during destruction, and handles Android API 34's
+`onTimeout(int)` and API 35+'s typed `onTimeout(int, int)` by stopping immediately.
 
-### 2. Full androidlib structure merged automatically
-- No manual editing of `Assets/Plugins/Android`
-- No project‑level manifest hacking
-- Everything contained inside the UPM package
+The manifest sets `android:stopWithTask="true"`. Swiping/removing the application
+task therefore deliberately cancels the bounded operation and removes the
+notification; this is not a mechanism for surviving task removal.
 
-### 3. Runtime‑updateable notification
-You can dynamically change:
-- Notification title
-- Notification message
+## Public Unity API
 
-Useful for localization, game state, matchmaking status, reconnection attempts, etc.
+Existing entry points remain available, but `Start()` and `Start(title, message)` now
+start the same bounded 120-second operation instead of an unbounded service:
 
-### 4. C# wrapper API
-Provides:
-- `Start()`
-- `Stop()`
-- `Update(title, message)`
-
-All without touching Java code.
-
----
-
-## Project State Before Using This Package
-### Typical problems:
-- Socket disconnects when app minimized after ~65 seconds
-- Reconnection logic never fires
-- Background sync suspended and no reliable way to maintain networking during minimize or lock screen.
-
-### After installing the package:
-- Stable realtime networking in background
-- Socket connection stays alive indefinitely.
-- SmartFoxServer reconnection works normally.
-- Network background execution is stable.
-
----
-
-## Installation (UPM)
-Add via Git URL:
-```
-https://github.com/MahdiIranNezhad/UFS.git
-```
-Or add to `Packages/manifest.json`:
-```json
-"com.unity.extension.unityforegroundservice": "https://github.com/MahdiIranNezhad/UFS.git"
-```
-
----
-
-## Usage
-### Start the service
 ```csharp
-UFS.UnityForegroundService.Start(); /// for example on `Awake()` in the first class.
+UFS.UnityForegroundService.Start();
+UFS.UnityForegroundService.Start("Match cleanup", "Closing the connection...");
+UFS.UnityForegroundService.Update("Match cleanup", "Still closing...");
+UFS.UnityForegroundService.Stop();
+
+UFS.UnityForegroundService.StartShortTask(
+    taskId: "game-generated-task-id",
+    title: "Match cleanup",
+    message: "Closing the connection...",
+    deadlineSeconds: 120);
 ```
 
-### Stop the service
+`StartShortTask` returns `ShortTaskStartResult`. `Requested` only means Android
+accepted the start request; `IsRunning` becomes true only after the Java service
+reports its active state. `Rejected`, `AlreadyRequested`, and `AlreadyRunning` are
+explicit outcomes. `CancelShortTask(taskId)` is idempotent. The controller normally
+owns these calls; direct callers must preserve task IDs and acknowledgement rules.
+
+Notification defaults are `Connection active` and `Finishing background operation`.
+For lifecycle-driven use, configure them with:
+
 ```csharp
-UFS.UnityForegroundService.Stop(); /// for example on the accessable `OnApplicationQuit()` method.
+UFS.UFSShortTaskController.Configure(
+    "Match cleanup",
+    "Closing the connection...",
+    deadlineSeconds: 120);
 ```
 
-### Update the notification text
+## SmartFox integration contract
+
+No SmartFox implementation is fabricated in this package. Register a delegate that
+uses the SDK instance owned by the consuming game:
+
 ```csharp
-UFS.UnityForegroundService.Update(
-    "Online Match",
-    "Waiting for opponent..."
-);
+using System;
+using System.Threading;
+using Cysharp.Threading.Tasks;
+using UFS;
+
+// The adapter owns the real SDK-specific event subscription and disconnect call.
+// It must return true if the client is already disconnected or after the SDK's
+// confirmed disconnect event; return false for an explicit failure.
+public static class GameSmartFoxIntegration
+{
+    public static void Install(IActualSmartFoxAdapter adapter)
+    {
+        UFSShortTaskController.RegisterSmartFoxDisconnectHandler(
+            (taskId, cancellationToken) => adapter.DisconnectAndWaitAsync(cancellationToken));
+    }
+}
+
+public interface IActualSmartFoxAdapter
+{
+    UniTask<bool> DisconnectAndWaitAsync(CancellationToken cancellationToken);
+}
 ```
 
----
+`IActualSmartFoxAdapter` is intentionally an application-owned seam: implement it
+with the installed SmartFox SDK's real `IsConnected`/disconnect/event APIs, including
+unsubscribing event handlers and honoring the cancellation token. Do not call the
+Unity wrapper's acknowledgement from the adapter. The controller performs that only
+after the delegate returns `true`, and times out the delegate after four seconds.
 
-## Runtime Notification Behavior
-The service shows a required foreground notification.
+## Android configuration
 
-Default values:
-- Title: `Connection active`
-- Message: `Keeping connection alive`
+The package manifest declares only:
 
-Using `Update()` allows runtime changes, including localized strings.
-
----
-
-## Android Permissions
-Declared in the package’s manifest:
 ```xml
 <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-<uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
-<uses-permission android:name="android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING" />
+...
+android:foregroundServiceType="shortService"
+android:stopWithTask="true"
 ```
-Required on Android 12+ and Android 14+ for networking while backgrounded.
 
----
+The old `FOREGROUND_SERVICE_SPECIAL_USE` permission and
+`PROPERTY_SPECIAL_USE_FGS_SUBTYPE` property are intentionally removed. The service
+class remains `com.unity.extension.UnityForegroundService`; the notification channel
+ID and notification ID remain compatible with the previous package.
 
-## ProGuard / R8 Integration
-`proguard.txt` inside the androidlib ensures the service is not removed:
+`shortService` has no type-specific permission, no sticky restart behavior, and no
+guarantee of background network continuity. On API 34+ the Java service calls
+`startForeground(..., FOREGROUND_SERVICE_TYPE_SHORT_SERVICE)`. On older supported
+versions it uses the two-argument API and still enforces the package's own timer,
+because the Android timeout callback does not exist on API 33 and lower.
+
+After importing the package, inspect the consuming Unity/Gradle merged manifest and
+confirm that another plugin has not reintroduced a conflicting service declaration or
+removed `FOREGROUND_SERVICE`. This repository cannot produce a consuming Unity
+merged manifest by itself.
+
+## Installation and upgrade
+
+Add the package through UPM, for example:
+
+```json
+"com.unity.extension.unityforegroundservice":
+  "https://github.com/MahdiIranNezhad/UFS.git"
 ```
--keep class com.unity.extension.** { *; }
--keep class com.unity.extension.UnityForegroundService { *; }
-```
-No additional project setup required.
 
----
+After upgrading from the old special-use release:
 
-## Lifecycle Behavior
-### When the app goes to background:
-- Service stays alive
-- Network stays alive
-- Notification remains visible
+1. Remove any project-level copy of the old UFS service or special-use properties.
+2. Rebuild the Android player so the package manifest is merged again.
+3. Register the SmartFox adapter during application initialization.
+4. Verify notification permission/channel behavior on the target device and exercise
+   the manual plan in `Documentation/SHORT_SERVICE_DEVICE_TEST_PLAN.md`.
 
-### When the user swipes the app away:
-The service is stopped automatically.
+## Verification and limitations
 
-### When Unity quits:
-`UnityForegroundService.Stop()` sends a STOP action to the service.
+The repository includes `Tests/Verify-UFS.ps1` for source, XML, manifest, API, and
+package-structure checks. A Unity editor/player build and a physical API 33/34/35
+device run require a consuming Unity project and devices; they are not present in
+this package repository. The device test plan records the required logcat evidence.
 
----
+Android may reject a start from a background state (`ForegroundServiceStartNotAllowedException`),
+kill the process, or apply vendor-specific battery policy. A native fallback can
+remove the foreground service before the system's short-service ANR window where
+scheduled execution permits, but it cannot guarantee SmartFox server-side receipt of
+a disconnect. This feature is a bounded shutdown aid, not a reconnection or
+continuous-connectivity guarantee.
 
-## Why This Package Matters
-Android’s modern background policies kill background tasks aggressively. If your game uses:
-- SmartFoxServer
-- WebSockets
-- Long‑running TCP connections
-- Realtime multiplayer
-- Background data sync
+Official Android references:
 
-…you **must** use a foreground service to remain stable.
-
-This package provides a clean, reusable, UPM‑friendly solution used across all projects without touching platform folders.
-
----
-
-## Contributions
-PRs and improvements are welcome.
-
+- [Foreground service types: short service](https://developer.android.com/develop/background-work/services/fgs/service-types#short-service)
+- [Foreground service API reference](https://developer.android.com/reference/android/app/Service#onTimeout(int))
+- [Foreground-service launch restrictions](https://developer.android.com/develop/background-work/services/fgs/restrictions-bg-start)

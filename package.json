@@ -1,8 +1,8 @@
 {
   "name": "com.unity.extension.unityforegroundservice",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "displayName": "Android Foreground Service",
-  "description": "Provides a customizable Android Foreground Service for Unity.",
+  "description": "Provides a bounded Android shortService lifecycle for Unity foreground operations.",
   "unity": "2022.3",
   "type": "library",
   "author": {
