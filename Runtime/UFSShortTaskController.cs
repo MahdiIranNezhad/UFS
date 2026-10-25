@@ -1,6 +1,4 @@
 using System;
-using System.Threading;
-using Cysharp.Threading.Tasks;
 using UnityEngine;
 
 namespace UFS
@@ -12,13 +10,11 @@ namespace UFS
     public sealed class UFSShortTaskController : MonoBehaviour
     {
         public const string GameObjectName = "UFSShortTaskController";
-        public const int DefaultDisconnectTimeoutMilliseconds = 4000;
 
         private static UFSShortTaskController instance;
-        private static Func<string, CancellationToken, UniTask<bool>> smartFoxDisconnectHandler;
+        private static Func<string, bool> smartFoxDisconnectHandler;
 
         private string activeTaskId;
-        private CancellationTokenSource disconnectCancellation;
         private bool disconnectStarted;
         private bool applicationPaused;
 
@@ -32,13 +28,7 @@ namespace UFS
             EnsureInstance();
         }
 
-        /// <summary>
-        /// Registers the consuming game's actual SmartFox disconnect operation.
-        /// Return true only after the SDK confirms disconnect, or when it was already
-        /// disconnected. The handler must honor cancellation and complete quickly.
-        /// </summary>
-        public static void RegisterSmartFoxDisconnectHandler(
-            Func<string, CancellationToken, UniTask<bool>> handler)
+        public static void RegisterSmartFoxDisconnectHandler(Func<string, bool> handler)
         {
             if (handler == null)
                 throw new ArgumentNullException(nameof(handler));
@@ -46,11 +36,9 @@ namespace UFS
             smartFoxDisconnectHandler = handler;
         }
 
-        public static void UnregisterSmartFoxDisconnectHandler(
-            Func<string, CancellationToken, UniTask<bool>> handler)
+        public static void UnregisterSmartFoxDisconnectHandler()
         {
-            if (ReferenceEquals(smartFoxDisconnectHandler, handler))
-                smartFoxDisconnectHandler = null;
+            smartFoxDisconnectHandler = null;
         }
 
         public static void Configure(string title, string message, int deadlineSeconds)
@@ -146,7 +134,7 @@ namespace UFS
             }
 
             disconnectStarted = true;
-            DisconnectForTaskAsync(taskId).Forget();
+            DisconnectForTask(taskId);
         }
 
         public void OnNativeShortTaskTimeout(string taskId)
@@ -155,12 +143,11 @@ namespace UFS
                 return;
 
             Debug.LogWarning("[UFS] Android stopped the short task at its system timeout");
-            CancelDisconnectOnly();
             activeTaskId = null;
             disconnectStarted = false;
         }
 
-        private async UniTaskVoid DisconnectForTaskAsync(string taskId)
+        private void DisconnectForTask(string taskId)
         {
             var handler = smartFoxDisconnectHandler;
             if (handler == null)
@@ -169,35 +156,18 @@ namespace UFS
                 return;
             }
 
-            CancelDisconnectOnly();
-            disconnectCancellation = new CancellationTokenSource();
-            disconnectCancellation.CancelAfter(DefaultDisconnectTimeoutMilliseconds);
-
             bool success = false;
             try
             {
-                success = await handler(taskId, disconnectCancellation.Token)
-                    .Timeout(TimeSpan.FromMilliseconds(DefaultDisconnectTimeoutMilliseconds));
-            }
-            catch (OperationCanceledException)
-            {
-                Debug.LogWarning("[UFS] SmartFox disconnect was cancelled or timed out");
+                success = handler.Invoke(taskId);
             }
             catch (TimeoutException)
             {
-                Debug.LogWarning("[UFS] SmartFox disconnect exceeded its bounded timeout");
+                Debug.LogWarning("[UFS] SmartFox disconnect handler reported a timeout");
             }
             catch (Exception exception)
             {
                 Debug.LogError("[UFS] SmartFox disconnect failed: " + exception);
-            }
-            finally
-            {
-                if (disconnectCancellation != null)
-                {
-                    disconnectCancellation.Dispose();
-                    disconnectCancellation = null;
-                }
             }
 
             if (!success || !IsCurrentTask(taskId) || applicationPaused)
@@ -221,19 +191,8 @@ namespace UFS
             string taskId = activeTaskId;
             activeTaskId = null;
             disconnectStarted = false;
-            CancelDisconnectOnly();
             UnityForegroundService.CancelShortTask(taskId);
             Debug.Log("[UFS] Short task cancelled: " + reason);
-        }
-
-        private void CancelDisconnectOnly()
-        {
-            if (disconnectCancellation == null)
-                return;
-
-            disconnectCancellation.Cancel();
-            disconnectCancellation.Dispose();
-            disconnectCancellation = null;
         }
 
         private bool IsCurrentTask(string taskId)
@@ -245,7 +204,6 @@ namespace UFS
         {
             if (ReferenceEquals(instance, this))
             {
-                CancelDisconnectOnly();
                 instance = null;
             }
         }
