@@ -1,3 +1,4 @@
+using Cysharp.Threading.Tasks;
 using System;
 using UnityEngine;
 
@@ -78,7 +79,7 @@ namespace UFS
             DontDestroyOnLoad(gameObject);
         }
 
-        private void OnApplicationPause(bool pauseStatus)
+        private async void OnApplicationPause(bool pauseStatus)
         {
             if (pauseStatus == applicationPaused)
                 return;
@@ -87,7 +88,10 @@ namespace UFS
             if (pauseStatus)
                 BeginShortTask();
             else
+            {
+                await UniTask.Delay(500);
                 CancelActiveTask("application resumed");
+            }
         }
 
         private void OnApplicationQuit()
@@ -143,6 +147,7 @@ namespace UFS
                 return;
 
             Debug.LogWarning("[UFS] Android stopped the short task at its system timeout");
+            DisconnectForTask(taskId);
             activeTaskId = null;
             disconnectStarted = false;
         }
