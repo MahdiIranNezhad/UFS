@@ -2,18 +2,14 @@
           package="com.unity.extension">
 
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
     <application>
         <service
                 android:name="com.unity.extension.UnityForegroundService"
                 android:enabled="true"
                 android:exported="false"
-                android:foregroundServiceType="specialUse">
-
-            <property
-                    android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                    android:value="realtime_session_continuity_to_prevent_forced_restart" />
+                android:foregroundServiceType="shortService"
+                android:stopWithTask="true">
         </service>
     </application>
 </manifest>

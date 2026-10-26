@@ -1,212 +1,364 @@
-﻿#if UNITY_ANDROID && !UNITY_EDITOR
-using Cysharp.Threading.Tasks;
+#if UNITY_ANDROID && !UNITY_EDITOR
 using System;
+using Cysharp.Threading.Tasks;
 using UnityEngine;
 #endif
 
 namespace UFS
 {
+    public enum ShortTaskStartResult
+    {
+        Rejected = 0,
+        Requested = 1,
+        AlreadyRequested = 2,
+        AlreadyRunning = 3
+    }
+
     public static class UnityForegroundService
     {
+        public const int DefaultDeadlineSeconds = 120;
+        public const int MaxDeadlineSeconds = 150;
+
 #if UNITY_ANDROID && !UNITY_EDITOR
+        private static AndroidJavaObject activity;
+        private static AndroidJavaClass serviceClass;
+        private static string actionStartShortTask;
+        private static string actionUpdate;
+        private static string actionStop;
+        private static string actionCancelShortTask;
+        private static string actionDisconnectConfirmed;
+        private static string extraTitle;
+        private static string extraMessage;
+        private static string extraTaskId;
+        private static string extraDeadlineMillis;
+        private static string requestedTaskId;
+        private static bool initialized;
+        private static bool initializationFailed;
 
-        private static readonly AndroidJavaObject activity;
-        private static readonly AndroidJavaClass serviceClass;
-
-        private static readonly string ACTION_UPDATE;
-        private static readonly string ACTION_STOP;
-        private static readonly string EXTRA_TITLE;
-        private static readonly string EXTRA_MESSAGE;
-
-        public static bool IsRunning { get; private set; } = false;
-
-        private const int MaxKarmaTries = 6;
-        private const int KarmaDelayMs = 300;
-
-        static UnityForegroundService()
+        public static bool IsRunning
         {
-            Debug.Log("[UFS] Initializing Foreground Service");
-
-            using var unityPlayer = new AndroidJavaClass("com.unity3d.player.UnityPlayer");
-            activity = unityPlayer.GetStatic<AndroidJavaObject>("currentActivity");
-
-            serviceClass = new AndroidJavaClass("com.unity.extension.UnityForegroundService");
-
-            ACTION_UPDATE = serviceClass.GetStatic<string>("ACTION_UPDATE");
-            ACTION_STOP = serviceClass.GetStatic<string>("ACTION_STOP");
-            EXTRA_TITLE = serviceClass.GetStatic<string>("EXTRA_TITLE");
-            EXTRA_MESSAGE = serviceClass.GetStatic<string>("EXTRA_MESSAGE");
+            get { return CheckAndroidServiceRunning(); }
         }
 
         public static void Start()
         {
-            if (IsRunning)
-            {
-                Debug.Log("[UFS] Start() ignored → already running");
-                return;
-            }
-
-            Debug.Log("[UFS] Start() → Sending startForegroundService()");
-
-            using var intent = new AndroidJavaObject("android.content.Intent", activity, serviceClass);
-            int sdk = new AndroidJavaClass("android.os.Build$VERSION").GetStatic<int>("SDK_INT");
-
-            if (sdk >= 26)
-                activity.Call<AndroidJavaObject>("startForegroundService", intent);
-            else
-                activity.Call<AndroidJavaObject>("startService", intent);
-
-            ConfirmServiceStarted().Forget();
+            Start("Connection active", "Finishing background operation");
         }
 
         public static void Start(string title, string message)
         {
-            if (IsRunning)
-            {
-                Debug.Log("[UFS] Start(title,message) ignored → already running");
-                return;
-            }
-
-            Debug.Log($"[UFS] Start(title,message) → Starting with '{title}' / '{message}'");
-
-            using var intent = new AndroidJavaObject("android.content.Intent", activity, serviceClass);
-            intent.Call<AndroidJavaObject>("putExtra", EXTRA_TITLE, title);
-            intent.Call<AndroidJavaObject>("putExtra", EXTRA_MESSAGE, message);
-
-            int sdk = new AndroidJavaClass("android.os.Build$VERSION").GetStatic<int>("SDK_INT");
-            if (sdk >= 26)
-                activity.Call<AndroidJavaObject>("startForegroundService", intent);
-            else
-                activity.Call<AndroidJavaObject>("startService", intent);
-
-            ConfirmServiceStarted().Forget();
+            StartShortTask(NewTaskId(), title, message, DefaultDeadlineSeconds);
         }
 
-
-        private static async UniTaskVoid ConfirmServiceStarted()
+        public static ShortTaskStartResult StartShortTask(
+            string taskId,
+            string title,
+            string message,
+            int deadlineSeconds = DefaultDeadlineSeconds)
         {
-            Debug.Log("[UFS] ConfirmServiceStarted() checking...");
-
-            for (int i = 0; i < MaxKarmaTries; i++)
+            if (string.IsNullOrEmpty(taskId))
             {
-                if (CheckAndroidServiceRunning())
-                {
-                    Debug.Log("[UFS] → Android confirmed service is running");
-                    IsRunning = true;
-                    return;
-                }
-
-                Debug.Log($"[UFS] Karma retry {i + 1}/{MaxKarmaTries}");
-                await UniTask.Delay(KarmaDelayMs);
+                Debug.LogError("[UFS] StartShortTask rejected: task ID is empty");
+                return ShortTaskStartResult.Rejected;
             }
 
-            Debug.LogWarning("[UFS] Android did NOT start service in time");
-            IsRunning = false;
+            if (!EnsureInitialized())
+                return ShortTaskStartResult.Rejected;
+
+            if (string.Equals(requestedTaskId, taskId, StringComparison.Ordinal))
+                return ShortTaskStartResult.AlreadyRequested;
+
+            if (CheckAndroidServiceRunning())
+            {
+                Debug.LogWarning("[UFS] StartShortTask rejected: another native task is already running");
+                return ShortTaskStartResult.AlreadyRunning;
+            }
+
+            int boundedSeconds = Math.Max(1, Math.Min(MaxDeadlineSeconds, deadlineSeconds));
+            try
+            {
+                using (var intent = CreateIntent(actionStartShortTask))
+                {
+                    PutExtra(intent, extraTaskId, taskId);
+                    PutExtra(intent, extraTitle, title ?? string.Empty);
+                    PutExtra(intent, extraMessage, message ?? string.Empty);
+                    PutExtra(intent, extraDeadlineMillis, (long)boundedSeconds * 1000L);
+                    StartForegroundService(intent);
+                }
+
+                requestedTaskId = taskId;
+                Debug.Log("[UFS] Short-task start requested; IsRunning becomes true only after native confirmation");
+                ConfirmServiceStarted(taskId).Forget();
+                return ShortTaskStartResult.Requested;
+            }
+            catch (Exception exception)
+            {
+                requestedTaskId = null;
+                Debug.LogError("[UFS] Short-task start rejected by Android: " + exception);
+                return ShortTaskStartResult.Rejected;
+            }
         }
 
         public static void Update(string title, string message)
         {
-            Debug.Log($"[UFS] Update() requested: '{title}' / '{message}'");
-            TryUpdate(title, message).Forget();
-        }
-
-        private static async UniTaskVoid TryUpdate(string title, string message)
-        {
-            if (!IsRunning)
+            if (!EnsureInitialized() || !CheckAndroidServiceRunning())
             {
-                Debug.LogWarning("[UFS] Update() ignored → service not running");
+                Debug.LogWarning("[UFS] Update ignored: native service is not confirmed running");
                 return;
             }
 
-            for (int i = 0; i < MaxKarmaTries; i++)
+            try
+            {
+                using (var intent = CreateIntent(actionUpdate))
+                {
+                    PutExtra(intent, extraTitle, title ?? string.Empty);
+                    PutExtra(intent, extraMessage, message ?? string.Empty);
+                    SendServiceCommand(intent);
+                }
+            }
+            catch (Exception exception)
+            {
+                Debug.LogError("[UFS] Notification update failed: " + exception);
+            }
+        }
+
+        public static void CancelShortTask(string taskId)
+        {
+            if (!EnsureInitialized() || string.IsNullOrEmpty(taskId))
+                return;
+
+            try
             {
                 if (CheckAndroidServiceRunning())
                 {
-                    Debug.Log("[UFS] Update() → Sending UPDATE intent");
-                    SendUpdateIntent(title, message);
-                    return;
+                    using (var intent = CreateIntent(actionCancelShortTask))
+                    {
+                        PutExtra(intent, extraTaskId, taskId);
+                        SendServiceCommand(intent);
+                    }
                 }
-
-                Debug.Log($"[UFS] Update() waiting for service... {i + 1}/{MaxKarmaTries}");
-                await UniTask.Delay(KarmaDelayMs);
+                else
+                {
+                    // If startForegroundService is still pending, do not issue a new
+                    // background start merely to cancel it. stopService is idempotent.
+                    StopServiceDirectly();
+                }
+            }
+            catch (Exception exception)
+            {
+                Debug.LogError("[UFS] Short-task cancellation failed: " + exception);
             }
 
-            Debug.LogWarning("[UFS] Update() failed → service never became active");
-            IsRunning = false;
+            if (string.Equals(requestedTaskId, taskId, StringComparison.Ordinal))
+                requestedTaskId = null;
         }
 
-        private static void SendUpdateIntent(string title, string message)
+        public static void StopShortTaskAfterDisconnect(string taskId)
         {
-            using var intent = new AndroidJavaObject("android.content.Intent", activity, serviceClass);
-            intent.Call<AndroidJavaObject>("setAction", ACTION_UPDATE);
-            intent.Call<AndroidJavaObject>("putExtra", EXTRA_TITLE, title);
-            intent.Call<AndroidJavaObject>("putExtra", EXTRA_MESSAGE, message);
+            if (!EnsureInitialized() || string.IsNullOrEmpty(taskId))
+                return;
 
-            Debug.Log("[UFS] Dispatching UPDATE intent");
-            activity.Call<AndroidJavaObject>("startService", intent);
+            if (!CheckAndroidServiceRunning())
+            {
+                requestedTaskId = null;
+                Debug.LogWarning("[UFS] Disconnect acknowledgement ignored: native service is no longer running");
+                return;
+            }
+
+            try
+            {
+                using (var intent = CreateIntent(actionDisconnectConfirmed))
+                {
+                    PutExtra(intent, extraTaskId, taskId);
+                    SendServiceCommand(intent);
+                }
+            }
+            catch (Exception exception)
+            {
+                Debug.LogError("[UFS] Disconnect acknowledgement failed: " + exception);
+            }
+
+            if (string.Equals(requestedTaskId, taskId, StringComparison.Ordinal))
+                requestedTaskId = null;
         }
 
         public static void Stop()
         {
-            Debug.Log("[UFS] Stop() called");
-            TryStop().Forget();
-        }
-
-        private static async UniTaskVoid TryStop()
-        {
-            if (!IsRunning)
-            {
-                Debug.LogWarning("[UFS] Stop() ignored → service not running");
+            if (!EnsureInitialized())
                 return;
-            }
 
-            for (int i = 0; i < MaxKarmaTries; i++)
-            {
-                if (CheckAndroidServiceRunning())
-                {
-                    Debug.Log("[UFS] Stop() → Sending STOP intent");
-                    SendStopIntent();
-                    IsRunning = false;
-                    return;
-                }
-
-                Debug.Log($"[UFS] Stop() waiting for service... {i + 1}/{MaxKarmaTries}");
-                await UniTask.Delay(KarmaDelayMs);
-            }
-
-            Debug.LogWarning("[UFS] Stop() failed → Android never confirmed running state");
-            IsRunning = false;
-        }
-
-        private static void SendStopIntent()
-        {
-            using var intent = new AndroidJavaObject("android.content.Intent", activity, serviceClass);
-            intent.Call<AndroidJavaObject>("setAction", ACTION_STOP);
-            Debug.Log("[UFS] Dispatching STOP intent");
-            activity.Call<AndroidJavaObject>("startService", intent);
-        }
-
-        private static bool CheckAndroidServiceRunning()
-        {
             try
             {
-                bool r = serviceClass.CallStatic<bool>("isRunning");
-                Debug.Log($"[UFS] Android isRunning() = {r}");
-                return r;
+                using (var intent = CreateIntent(actionStop))
+                    SendServiceCommand(intent);
             }
-            catch (Exception e)
+            catch (Exception exception)
             {
-                Debug.LogError("[UFS] Error calling isRunning(): " + e);
+                Debug.LogError("[UFS] Stop failed: " + exception);
+            }
+
+            requestedTaskId = null;
+        }
+
+        private static string NewTaskId()
+        {
+            return Guid.NewGuid().ToString("N");
+        }
+
+        private static bool EnsureInitialized()
+        {
+            if (initialized)
+                return true;
+            if (initializationFailed)
+                return false;
+
+            try
+            {
+                using (var unityPlayer = new AndroidJavaClass("com.unity3d.player.UnityPlayer"))
+                    activity = unityPlayer.GetStatic<AndroidJavaObject>("currentActivity");
+
+                if (activity == null)
+                    throw new InvalidOperationException("Unity currentActivity is null");
+
+                serviceClass = new AndroidJavaClass("com.unity.extension.UnityForegroundService");
+                actionStartShortTask = serviceClass.GetStatic<string>("ACTION_START_SHORT_TASK");
+                actionUpdate = serviceClass.GetStatic<string>("ACTION_UPDATE");
+                actionStop = serviceClass.GetStatic<string>("ACTION_STOP");
+                actionCancelShortTask = serviceClass.GetStatic<string>("ACTION_CANCEL_SHORT_TASK");
+                actionDisconnectConfirmed = serviceClass.GetStatic<string>("ACTION_DISCONNECT_CONFIRMED");
+                extraTitle = serviceClass.GetStatic<string>("EXTRA_TITLE");
+                extraMessage = serviceClass.GetStatic<string>("EXTRA_MESSAGE");
+                extraTaskId = serviceClass.GetStatic<string>("EXTRA_TASK_ID");
+                extraDeadlineMillis = serviceClass.GetStatic<string>("EXTRA_DEADLINE_MILLIS");
+                initialized = true;
+                Debug.Log("[UFS] Android bridge initialized");
+                return true;
+            }
+            catch (Exception exception)
+            {
+                initializationFailed = true;
+                Debug.LogError("[UFS] Android bridge initialization failed: " + exception);
                 return false;
             }
         }
 
+        private static AndroidJavaObject CreateIntent(string action)
+        {
+            var intent = new AndroidJavaObject("android.content.Intent", activity, serviceClass);
+            using (var ignored = intent.Call<AndroidJavaObject>("setAction", action)) { }
+            return intent;
+        }
+
+        private static void PutExtra(AndroidJavaObject intent, string key, string value)
+        {
+            using (var ignored = intent.Call<AndroidJavaObject>("putExtra", key, value)) { }
+        }
+
+        private static void PutExtra(AndroidJavaObject intent, string key, long value)
+        {
+            using (var ignored = intent.Call<AndroidJavaObject>("putExtra", key, value)) { }
+        }
+
+        private static void StartForegroundService(AndroidJavaObject intent)
+        {
+            using (var sdkVersion = new AndroidJavaClass("android.os.Build$VERSION"))
+            {
+                int sdk = sdkVersion.GetStatic<int>("SDK_INT");
+                if (sdk >= 26)
+                {
+                    using (var ignored = activity.Call<AndroidJavaObject>("startForegroundService", intent)) { }
+                }
+                else
+                    using (var ignored = activity.Call<AndroidJavaObject>("startService", intent)) { }
+            }
+        }
+
+        private static void SendServiceCommand(AndroidJavaObject intent)
+        {
+            using (var ignored = activity.Call<AndroidJavaObject>("startService", intent)) { }
+        }
+
+        private static void StopServiceDirectly()
+        {
+            using (var intent = CreateIntent(actionStop))
+                activity.Call<bool>("stopService", intent);
+        }
+
+        private static bool CheckAndroidServiceRunning()
+        {
+            if (!EnsureInitialized())
+                return false;
+
+            try
+            {
+                return serviceClass.CallStatic<bool>("isRunning");
+            }
+            catch (Exception exception)
+            {
+                Debug.LogError("[UFS] Native service-state query failed: " + exception);
+                return false;
+            }
+        }
+
+        private static async UniTaskVoid ConfirmServiceStarted(string taskId)
+        {
+            try
+            {
+                for (int attempt = 0; attempt < 8; attempt++)
+                {
+                    if (!string.Equals(requestedTaskId, taskId, StringComparison.Ordinal))
+                        return;
+                    if (CheckAndroidServiceRunning())
+                    {
+                        Debug.Log("[UFS] Android confirmed the short task is running");
+                        return;
+                    }
+
+                    await UniTask.Delay(250);
+                }
+
+                if (string.Equals(requestedTaskId, taskId, StringComparison.Ordinal))
+                {
+                    requestedTaskId = null;
+                    Debug.LogWarning("[UFS] Android did not confirm the short task before the bounded confirmation window");
+                }
+            }
+            catch (Exception exception)
+            {
+                Debug.LogError("[UFS] Short-task confirmation failed: " + exception);
+            }
+        }
+
 #else
-        public static bool IsRunning => false;
-        public static void Start() { }
-        public static void Start(string title, string message) { }
-        public static void Stop() { }
-        public static void Update(string title, string message) { }
+
+        public const bool IsRunning = false;
+
+        public static void Start()
+        { }
+
+        public static void Start(string title, string message)
+        { }
+
+        public static ShortTaskStartResult StartShortTask(
+            string taskId,
+            string title,
+            string message,
+            int deadlineSeconds = DefaultDeadlineSeconds)
+        {
+            return ShortTaskStartResult.Rejected;
+        }
+
+        public static void Update(string title, string message)
+        { }
+
+        public static void CancelShortTask(string taskId)
+        { }
+
+        public static void StopShortTaskAfterDisconnect(string taskId)
+        { }
+
+        public static void Stop()
+        { }
 
 #endif
     }
